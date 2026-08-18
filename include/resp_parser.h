@@ -1,68 +1,25 @@
-#ifndef RESP_PARSER_H
-#define RESP_PARSER_H
+#pragma once
 
 #include "redis_clone.h"
 #include <string>
 #include <vector>
-#include <optional>
+
+using namespace std;
 
 namespace redis_clone {
 
 class RESPParser {
 public:
-    // Parse RESP protocol data into RedisValue
-    static std::optional<RedisValue> parse(const std::string& data);
-    
-    // Parse RESP protocol data into RedisValue and report exact consumed bytes
-    static std::optional<RedisValue> parse_with_consumed(const std::string& data, size_t& consumed_bytes);
-    
-    // Serialize RedisValue to RESP protocol
-    static std::string serialize(const RedisValue& value);
-    
-    // Parse array
-    static std::optional<std::vector<RedisValue>> parse_array(const std::string& data);
-    
-    // Serialize array
-    static std::string serialize_array(const std::vector<RedisValue>& values);
-    
-    // Parse bulk string
-    static std::optional<std::string> parse_bulk_string(const std::string& data);
-    
-    // Serialize bulk string
-    static std::string serialize_bulk_string(const std::string& str);
-    
-    // Parse simple string
-    static std::optional<std::string> parse_simple_string(const std::string& data);
-    
-    // Serialize simple string
-    static std::string serialize_simple_string(const std::string& str);
-    
-    // Parse integer
-    static std::optional<int64_t> parse_integer(const std::string& data);
-    
-    // Serialize integer
-    static std::string serialize_integer(int64_t value);
-    
-    // Parse error
-    static std::optional<std::string> parse_error(const std::string& data);
-    
-    // Serialize error
-    static std::string serialize_error(const std::string& error);
-    
-    // Serialize null
-    static std::string serialize_null();
-    
-    // Serialize OK response
-    static std::string serialize_ok();
-    
-    // Serialize PONG response
-    static std::string serialize_pong();
+    // Parse RESP protocol string, populating parsed array of tokens and consumed byte count
+    static bool parse_command(const string& data, vector<string>& out_args, size_t& consumed);
 
-private:
-    static size_t find_crlf(const std::string& data, size_t start);
-    static std::string read_line(const std::string& data, size_t& pos);
+    // Serialization methods for standard RESP data types
+    static string serialize_simple_string(const string& str);
+    static string serialize_error(const string& err);
+    static string serialize_integer(int64_t val);
+    static string serialize_bulk_string(const string& str);
+    static string serialize_null();
+    static string serialize_array(const vector<string>& elements);
 };
 
 } // namespace redis_clone
-
-#endif // RESP_PARSER_H

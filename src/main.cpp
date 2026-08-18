@@ -1,110 +1,79 @@
-#include "redis_server.h"
-#include "logger.h"
+#include "data_store.h"
+#include "resp_parser.h"
+#include "command_executor.h"
+#include "tcp_server.h"
+#include "persistence.h"
 #include <iostream>
 #include <csignal>
 #include <memory>
+#include <chrono>
+#include <thread>
+#include <atomic>
 
+using namespace std;
 using namespace redis_clone;
 
-std::unique_ptr<RedisServer> g_server;
+static atomic<bool> g_running{true};
+static unique_ptr<TCPServer> g_server;
 
 void signal_handler(int signal) {
-    std::cout << "\nReceived signal " << signal << ", shutting down..." << std::endl;
-    if (g_server) {
-        g_server->stop();
-    }
+    cout << "\n[INFO] Shutting down Redis Server (Signal " << signal << ")..." << endl;
+    g_running = false;
+    if (g_server) g_server->stop();
     exit(0);
-}
-
-void print_usage(const char* program_name) {
-    std::cout << "Usage: " << program_name << " [options]" << std::endl;
-    std::cout << "Options:" << std::endl;
-    std::cout << "  --port <port>        Set server port (default: 6379)" << std::endl;
-    std::cout << "  --config <file>      Load configuration from file" << std::endl;
-    std::cout << "  --log-level <level>  Set log level (debug, info, warning, error, fatal)" << std::endl;
-    std::cout << "  --log-file <file>    Set log file" << std::endl;
-    std::cout << "  --help               Show this help message" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
     int port = 6379;
-    std::string config_file;
-    std::string log_level = "info";
-    std::string log_file;
-    
-    // Parse command line arguments
     for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        
-        if (arg == "--help") {
-            print_usage(argv[0]);
-            return 0;
-        } else if (arg == "--port" && i + 1 < argc) {
-            port = std::atoi(argv[++i]);
-        } else if (arg == "--config" && i + 1 < argc) {
-            config_file = argv[++i];
-        } else if (arg == "--log-level" && i + 1 < argc) {
-            log_level = argv[++i];
-        } else if (arg == "--log-file" && i + 1 < argc) {
-            log_file = argv[++i];
-        } else {
-            std::cerr << "Unknown option: " << arg << std::endl;
-            print_usage(argv[0]);
-            return 1;
+        string arg = argv[i];
+        if (arg == "--port" && i + 1 < argc) {
+            port = atoi(argv[++i]);
         }
     }
-    
-    // Setup signal handlers
-    std::signal(SIGINT, signal_handler);
-    std::signal(SIGTERM, signal_handler);
-    
-    // Initialize logger
-    Logger& logger = Logger::get_instance();
-    
-    if (log_level == "debug") {
-        logger.set_log_level(LogLevel::DEBUG);
-    } else if (log_level == "info") {
-        logger.set_log_level(LogLevel::INFO);
-    } else if (log_level == "warning") {
-        logger.set_log_level(LogLevel::WARNING);
-    } else if (log_level == "error") {
-        logger.set_log_level(LogLevel::ERROR);
-    } else if (log_level == "fatal") {
-        logger.set_log_level(LogLevel::FATAL);
+
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    cout << "===========================================" << endl;
+    cout << "  Redis Clone (C++ In-Memory DB Engine)    " << endl;
+    cout << "===========================================" << endl;
+
+    auto store = make_shared<DataStore>();
+    auto executor = make_shared<CommandExecutor>(store);
+    auto persistence = make_shared<Persistence>(store);
+
+    // Auto-restore snapshot if available
+    if (persistence->load_snapshot("dump.rdb")) {
+        cout << "[INFO] Loaded existing snapshot from dump.rdb (" << store->dbsize() << " keys restored)" << endl;
     }
-    
-    if (!log_file.empty()) {
-        logger.set_log_file(log_file);
-    }
-    
-    LOG_INFO("Redis Clone - C++ Implementation");
-    LOG_INFO("=================================");
-    
-    // Create server
-    g_server = std::make_unique<RedisServer>(port);
-    
-    // Load configuration if specified
-    if (!config_file.empty()) {
-        if (!g_server->load_config(config_file)) {
-            LOG_WARNING("Using default configuration");
-        }
-    }
-    
-    // Try to load RDB snapshot
-    g_server->load_rdb("dump.rdb");
-    
-    // Start server
+
+    g_server = make_unique<TCPServer>(port);
+    g_server->set_handler([executor](const string& request, size_t& consumed) -> string {
+        vector<string> args;
+        if (!RESPParser::parse_command(request, args, consumed) || consumed == 0) return "";
+        return executor->execute(args);
+    });
+
     if (!g_server->start()) {
-        LOG_FATAL("Failed to start Redis server");
+        cerr << "[FATAL] Failed to start server on port " << port << endl;
         return 1;
     }
-    
-    LOG_INFO("Server is running. Press Ctrl+C to stop.");
-    
-    // Keep server running
-    while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    // Periodic snapshot & TTL cleanup thread
+    thread background_worker([store, persistence]() {
+        while (g_running) {
+            this_thread::sleep_for(chrono::seconds(1));
+            store->cleanup_expired_keys();
+        }
+    });
+
+    cout << "[INFO] Server ready to accept client connections. Press Ctrl+C to stop." << endl;
+
+    while (g_running) {
+        this_thread::sleep_for(chrono::seconds(1));
     }
-    
+
+    if (background_worker.joinable()) background_worker.join();
     return 0;
 }

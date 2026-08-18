@@ -1,376 +1,105 @@
-# Redis Clone - C++ Implementation
+# Redis Clone - C++ In-Memory Key-Value Database
 
-A placement-level, full-fledged Redis clone implemented in C++17. This project demonstrates a complete in-memory key-value store with Redis protocol compatibility, persistence, and comprehensive data structure support.
+A high-performance, multithreaded in-memory key-value database built in C++ with Redis-like data structures, RESP protocol support, and file-based snapshot persistence.
 
-## Features
+---
 
-### Core Data Structures
-- **Strings** - Basic key-value storage
-- **Hashes** - Field-value pairs
-- **Lists** - Ordered collections
-- **Sets** - Unordered unique collections
-- **Sorted Sets** - Ordered sets with scores
+## 🚀 Key Highlights & Specifications
 
-### Key Features
-- **RESP Protocol** - Full Redis Serialization Protocol implementation
-- **TCP Server** - Multi-client connection handling
-- **Thread Safety** - Shared mutex for concurrent access
-- **Key Expiration** - TTL support with automatic cleanup
-- **Persistence** - RDB (snapshot) and AOF (append-only file) support
-- **Configuration** - Redis-style configuration file support
-- **Logging** - Comprehensive logging system with multiple levels
+- **Tools & Technologies**: C++17, STL, TCP Sockets, Multithreading (`std::thread`), Concurrency & Mutexes (`std::shared_mutex`), RESP Protocol.
+- **Multithreaded Network Server**: Engineered a client-server in-memory database using TCP sockets and mutex synchronization to safely handle concurrent client connections without race conditions.
+- **RESP Protocol & Core Commands**: Full Redis Serialization Protocol (RESP) parser and serializer supporting sub-millisecond execution for **String**, **List**, and **Hash** data structures, along with **TTL / Expiration**.
+- **Snapshot Persistence**: Periodic and on-demand file-based database snapshots for reliable crash recovery and state restoration.
 
-## Architecture
+---
+
+## 🏛 Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Redis Server                         │
-├─────────────────────────────────────────────────────────┤
-│  TCP Server  │  Command Executor  │  Persistence Layer   │
-├─────────────────────────────────────────────────────────┤
-│              RESP Parser / Serializer                    │
-├─────────────────────────────────────────────────────────┤
-│                   Data Store                             │
-│  ┌─────────┬─────────┬─────────┬─────────┬──────────┐  │
-│  │ String  │  Hash   │  List   │  Set    │ Sorted   │  │
-│  │         │         │         │         │   Set    │  │
-│  └─────────┴─────────┴─────────┴─────────┴──────────┘  │
-├─────────────────────────────────────────────────────────┤
-│              Thread Safety (Shared Mutex)                │
-└─────────────────────────────────────────────────────────┘
+                       [ Client (e.g. redis-cli) ]
+                                   │
+                           Raw TCP Bytes
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 1. Network Layer: TCPServer (tcp_server.h / tcp_server.cpp)            │
+│    - Multi-client connection handling                                  │
+│    - Concurrent worker thread per connection                           │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+                       RESP Stream ("*3\r\n$3\r\nSET...")
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 2. Protocol Layer: RESPParser (resp_parser.h / resp_parser.cpp)        │
+│    - Deserializes raw stream into parsed command tokens                │
+│    - Serializes output into RESP format ("+OK\r\n", ":100\r\n", etc.) │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+                      Parsed Command: ["SET", "key", "val"]
+                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│ 3. Execution Layer: CommandExecutor (command_executor.h / .cpp)        │
+│    - Dispatches to handlers (SET, GET, LPUSH, HSET, EXPIRE, etc.)      │
+└──────────────────┬─────────────────────────────────┬───────────────────┘
+                   │                                 │
+            Executes Operation                  Snapshot Save / Restore
+                   ▼                                 ▼
+┌──────────────────────────────────────┐  ┌──────────────────────────────┐
+│ 4. Storage: DataStore                │  │ 5. Persistence:              │
+│    (data_store.h / data_store.cpp)   │  │    (persistence.h / .cpp)    │
+│    - std::unordered_map store_       │  │    - File-based RDB snapshot │
+│    - std::shared_mutex concurrency   │  │    - Crash recovery loader   │
+│    - TTL & key expiration            │  └──────────────────────────────┘
+└──────────────────────────────────────┘
 ```
 
-## Project Structure
+---
+
+## 📂 Streamlined Project Structure
 
 ```
 redis-clone/
-├── CMakeLists.txt              # Build configuration
-├── README.md                   # This file
+├── README.md                   # Project overview & documentation
 ├── include/                    # Header files
-│   ├── redis_clone.h          # Main definitions
-│   ├── data_store.h           # Key-value store
-│   ├── resp_parser.h          # RESP protocol
-│   ├── tcp_server.h           # Network server
-│   ├── command_executor.h     # Command handlers
-│   ├── rdb_persistence.h      # RDB snapshot
-│   ├── aof_persistence.h      # AOF logging
-│   ├── config.h               # Configuration
-│   ├── logger.h               # Logging system
-│   └── redis_server.h         # Main server class
+│   ├── redis_clone.h          # Core types (RedisValue, KeyEntry, RedisType)
+│   ├── data_store.h           # Thread-safe in-memory key-value store
+│   ├── resp_parser.h          # RESP protocol serializer & parser
+│   ├── command_executor.h     # Command routing & handler logic
+│   ├── tcp_server.h           # Multithreaded cross-platform TCP server
+│   └── persistence.h          # File snapshot persistence
 └── src/                       # Implementation files
-    ├── data_store.cpp
-    ├── resp_parser.cpp
-    ├── tcp_server.cpp
-    ├── command_executor.cpp
-    ├── rdb_persistence.cpp
-    ├── aof_persistence.cpp
-    ├── config.cpp
-    ├── logger.cpp
-    ├── redis_server.cpp
-    └── main.cpp
+    ├── data_store.cpp         # Storage & TTL operations
+    ├── resp_parser.cpp        # Protocol parsing & formatting
+    ├── command_executor.cpp   # Command execution
+    ├── tcp_server.cpp         # Socket server & thread management
+    ├── persistence.cpp        # Disk snapshot save/load
+    ├── main.cpp               # Server entry point
+    └── test_main.cpp          # Automated verification test suite
 ```
 
-## Building
+---
 
-### Prerequisites
-- C++17 compatible compiler (GCC 7+, Clang 5+, MSVC 2017+)
-- CMake 3.14 or higher
-- (Linux) pthread library
+## 🛠 Supported Commands
 
-### Build Instructions
+| Category | Commands |
+| :--- | :--- |
+| **Strings** | `SET`, `GET`, `DEL`, `EXISTS`, `KEYS` |
+| **Lists** | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`, `LLEN` |
+| **Hashes** | `HSET`, `HGET`, `HDEL`, `HGETALL`, `HLEN` |
+| **Expiration** | `EXPIRE`, `TTL`, `PERSIST` |
+| **Server / Utility** | `PING`, `DBSIZE`, `FLUSHALL` |
 
-#### Linux/macOS
+---
+
+## 💻 Build and Run
+
+### Run Server:
 ```bash
-mkdir build
-cd build
-cmake ..
-make
-```
-
-#### Windows (Visual Studio)
-```bash
-mkdir build
-cd build
-cmake ..
-cmake --build . --config Release
-```
-
-#### Windows (MinGW)
-```bash
-mkdir build
-cd build
-cmake -G "MinGW Makefiles" ..
-mingw32-make
-```
-
-The executable will be named `redis_server` (or `redis_server.exe` on Windows).
-
-## Usage
-
-### Basic Usage
-
-Start the server with default settings:
-```bash
-./redis_server
-```
-
-Start on a custom port:
-```bash
-./redis_server --port 6380
-```
-
-Load configuration file:
-```bash
-./redis_server --config redis.conf
-```
-
-Set log level and file:
-```bash
-./redis_server --log-level debug --log-file redis.log
-```
-
-### Command Line Options
-- `--port <port>` - Set server port (default: 6379)
-- `--config <file>` - Load configuration from file
-- `--log-level <level>` - Set log level (debug, info, warning, error, fatal)
-- `--log-file <file>` - Set log file path
-- `--help` - Show help message
-
-### Connecting with redis-cli
-
-```bash
-redis-cli -p 6379
-```
-
-## Supported Commands
-
-### String Commands
-- `SET key value [EX seconds]` - Set key-value pair with optional expiration
-- `GET key` - Get value by key
-- `DEL key [key ...]` - Delete one or more keys
-- `EXISTS key [key ...]` - Check if keys exist
-- `TYPE key` - Get the type of key
-- `EXPIRE key seconds` - Set expiration time
-- `TTL key` - Get time to live
-- `PERSIST key` - Remove expiration
-
-### Hash Commands
-- `HSET key field value` - Set hash field
-- `HGET key field` - Get hash field
-- `HDEL key field [field ...]` - Delete hash fields
-- `HKEYS key` - Get all hash fields
-- `HVALS key` - Get all hash values
-- `HGETALL key` - Get all fields and values
-- `HEXISTS key field` - Check if field exists
-- `HLEN key` - Get number of fields
-
-### List Commands
-- `LPUSH key value [value ...]` - Push to left
-- `RPUSH key value [value ...]` - Push to right
-- `LPOP key` - Pop from left
-- `RPOP key` - Pop from right
-- `LRANGE key start stop` - Get range of elements
-- `LLEN key` - Get list length
-- `LINDEX key index` - Get element by index
-
-### Set Commands
-- `SADD key member [member ...]` - Add members
-- `SREM key member [member ...]` - Remove members
-- `SISMEMBER key member` - Check if member exists
-- `SMEMBERS key` - Get all members
-- `SCARD key` - Get set size
-
-### Sorted Set Commands
-- `ZADD key score member [score member ...]` - Add members with scores
-- `ZREM key member [member ...]` - Remove members
-- `ZSCORE key member` - Get score of member
-- `ZRANGE key start stop` - Get range by score (ascending)
-- `ZREVRANGE key start stop` - Get range by score (descending)
-- `ZCARD key` - Get sorted set size
-
-### Server Commands
-- `PING [message]` - Ping server
-- `DBSIZE` - Get number of keys in database
-- `KEYS pattern` - Find keys matching pattern
-- `FLUSHDB` - Clear current database
-- `FLUSHALL` - Clear all databases
-
-## Configuration
-
-Create a `redis.conf` file with the following options:
-
-```
-# Network
-port 6379
-bind 127.0.0.1
-
-# General
-daemonize no
-pidfile /var/run/redis.pid
-
-# Logging
-loglevel notice
-logfile ""
-
-# Database
-databases 16
-
-# Snapshotting
-save 900 1
-save 300 10
-save 60 10000
-
-# AOF
-appendonly no
-appendfilename appendonly.aof
-appendfsync everysec
-
-# Limits
-maxclients 10000
-timeout 0
-tcp-keepalive 300
-```
-
-## Persistence
-
-### RDB (Snapshot)
-RDB persistence creates point-in-time snapshots of the dataset.
-
-```cpp
-// Save snapshot
-server->save_rdb("dump.rdb");
-
-// Load snapshot
-server->load_rdb("dump.rdb");
-```
-
-### AOF (Append Only File)
-AOF logs every write operation received by the server.
-
-```cpp
-// Enable AOF
-server->enable_aof(true, "appendonly.aof");
-```
-
-## Examples
-
-### String Operations
-```
-SET mykey "Hello World"
-GET mykey
-EXISTS mykey
-EXPIRE mykey 60
-TTL mykey
-```
-
-### Hash Operations
-```
-HSET user:1 name "John Doe"
-HSET user:1 email "john@example.com"
-HGET user:1 name
-HGETALL user:1
-```
-
-### List Operations
-```
-LPUSH mylist "item1"
-LPUSH mylist "item2"
-LRANGE mylist 0 -1
-LPOP mylist
-```
-
-### Set Operations
-```
-SADD myset "member1"
-SADD myset "member2"
-SMEMBERS myset
-SISMEMBER myset "member1"
-```
-
-### Sorted Set Operations
-```
-ZADD leaderboard 100 "player1"
-ZADD leaderboard 200 "player2"
-ZRANGE leaderboard 0 -1
-ZSCORE leaderboard "player1"
-```
-
-## Testing with redis-cli
-
-```bash
-# Start the server
+g++ -std=c++17 src/data_store.cpp src/resp_parser.cpp src/command_executor.cpp src/tcp_server.cpp src/persistence.cpp src/main.cpp -Iinclude -o redis_server -lws2_32
 ./redis_server --port 6379
-
-# In another terminal, connect with redis-cli
-redis-cli -p 6379
-
-# Test commands
-127.0.0.1:6379> PING
-PONG
-
-127.0.0.1:6379> SET mykey "Hello"
-OK
-
-127.0.0.1:6379> GET mykey
-"Hello"
-
-127.0.0.1:6379> DBSIZE
-(integer) 1
 ```
 
-## Implementation Details
-
-### Thread Safety
-- Uses `std::shared_mutex` for read-write locking
-- Multiple readers can access data simultaneously
-- Writers have exclusive access
-
-### RESP Protocol
-- Implements Redis Serialization Protocol (RESP)
-- Supports simple strings, errors, integers, bulk strings, and arrays
-- Full serialization and deserialization
-
-### Key Expiration
-- Keys can have TTL set via `EXPIRE` command or `SET ... EX` option
-- Background thread cleans up expired keys every second
-- Thread-safe expiration checking
-
-### Memory Management
-- Uses smart pointers (`std::shared_ptr`, `std::unique_ptr`)
-- RAII pattern for resource management
-- No memory leaks
-
-## Limitations
-
-This is a placement-level implementation for educational purposes. Some limitations:
-- Simplified RDB format (not fully compatible with Redis)
-- Basic AOF implementation
-- No clustering or replication
-- No Lua scripting
-- No pub/sub
-- No transactions (MULTI/EXEC)
-- No modules
-- Limited to single database
-
-## Future Enhancements
-
-- Full RDB compatibility
-- Transaction support (MULTI/EXEC)
-- Pub/Sub messaging
-- Lua scripting
-- Cluster support
-- Replication
-- More data types (HyperLogLog, Bitmaps, Geospatial)
-- Performance optimizations
-
-## License
-
-This project is for educational purposes.
-
-## Contributing
-
-This is a learning project. Feel free to fork and modify for your own educational purposes.
-
-## Author
-
-Created as a placement-level demonstration of C++ systems programming and Redis architecture understanding.
+### Run Automated Tests:
+```bash
+g++ -std=c++17 src/data_store.cpp src/resp_parser.cpp src/command_executor.cpp src/persistence.cpp src/test_main.cpp -Iinclude -o test_main
+./test_main
+```

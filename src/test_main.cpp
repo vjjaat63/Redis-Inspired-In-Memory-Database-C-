@@ -1,143 +1,186 @@
 #include "data_store.h"
 #include "resp_parser.h"
-#include "rdb_persistence.h"
-#include "aof_persistence.h"
 #include "command_executor.h"
+#include "persistence.h"
 #include <iostream>
 #include <cassert>
-#include <cmath>
+#include <vector>
 
+#ifdef _WIN32
+    #include <windows.h>
+    void portable_sleep(int ms) { Sleep(ms); }
+#else
+    #include <unistd.h>
+    void portable_sleep(int ms) { usleep(ms * 1000); }
+#endif
+
+using namespace std;
 using namespace redis_clone;
 
-void test_zset_ordering() {
-    std::cout << "[TEST] Running ZSet Score Ordering Test..." << std::endl;
+void test_strings() {
+    cout << "[TEST] 1. String Operations...";
     DataStore store;
-
-    // Add players with scores
-    assert(store.zadd("leaderboard", 100.5, "Alice") == true);
-    assert(store.zadd("leaderboard", 50.0, "Bob") == true);
-    assert(store.zadd("leaderboard", 200.0, "Charlie") == true);
-    assert(store.zadd("leaderboard", 50.0, "Adam") == true); // Same score as Bob, lexicographical tie breaker
-
-    // ZRANGE ascending by score
-    auto range = store.zrange("leaderboard", 0, -1);
-    assert(range.size() == 4);
-    assert(range[0] == "Adam");   // score 50.0, "Adam" < "Bob"
-    assert(range[1] == "Bob");    // score 50.0
-    assert(range[2] == "Alice");  // score 100.5
-    assert(range[3] == "Charlie");// score 200.0
-
-    // ZREVRANGE descending by score
-    auto revrange = store.zrevrange("leaderboard", 0, -1);
-    assert(revrange.size() == 4);
-    assert(revrange[0] == "Charlie");
-    assert(revrange[1] == "Alice");
-    assert(revrange[2] == "Bob");
-    assert(revrange[3] == "Adam");
-
-    // ZSCORE
-    auto score = store.zscore("leaderboard", "Alice");
-    assert(score.has_value() && std::abs(*score - 100.5) < 0.001);
-
-    // Update score for Alice
-    store.zadd("leaderboard", 10.0, "Alice");
-    range = store.zrange("leaderboard", 0, -1);
-    assert(range[0] == "Alice"); // Alice now has lowest score (10.0)
-
-    std::cout << " -> PASSED!" << std::endl;
+    assert(store.set("name", "Alice"));
+    string val;
+    assert(store.get("name", val) && val == "Alice");
+    assert(store.exists("name") == true);
+    assert(store.del("name") == true);
+    assert(store.exists("name") == false);
+    assert(store.get("name", val) == false);
+    cout << " PASSED!" << endl;
 }
 
-void test_resp_parser_consumed() {
-    std::cout << "[TEST] Running RESP Parser Exact Byte Consumption Test..." << std::endl;
+void test_lists() {
+    cout << "[TEST] 2. List Operations...";
+    DataStore store;
+    assert(store.rpush("mylist", "a") == 1);
+    assert(store.rpush("mylist", "b") == 2);
+    assert(store.lpush("mylist", "start") == 3);
+    assert(store.llen("mylist") == 3);
 
-    std::string resp_array = "*3\r\n$3\r\nSET\r\n$4\r\nname\r\n$5\r\nAlice\r\n";
-    size_t consumed = 0;
-    auto val = RESPParser::parse_with_consumed(resp_array, consumed);
+    auto range = store.lrange("mylist", 0, -1);
+    assert(range.size() == 3);
+    assert(range[0] == "start" && range[1] == "a" && range[2] == "b");
 
-    assert(val.has_value());
-    assert(consumed == resp_array.length());
-    assert(std::holds_alternative<std::vector<RedisValue>>(*val));
+    string val;
+    assert(store.lpop("mylist", val) && val == "start");
+    assert(store.rpop("mylist", val) && val == "b");
+    assert(store.llen("mylist") == 1);
+    cout << " PASSED!" << endl;
+}
 
-    auto vec = std::get<std::vector<RedisValue>>(*val);
-    assert(vec.size() == 3);
-    assert(std::get<std::string>(vec[0]) == "SET");
-    assert(std::get<std::string>(vec[1]) == "name");
-    assert(std::get<std::string>(vec[2]) == "Alice");
+void test_hashes() {
+    cout << "[TEST] 3. Hash Operations...";
+    DataStore store;
+    assert(store.hset("user:1", "name", "Bob"));
+    assert(store.hset("user:1", "age", "30"));
+    assert(store.hlen("user:1") == 2);
+    string val;
+    assert(store.hget("user:1", "name", val) && val == "Bob");
+    assert(store.hget("user:1", "age", val) && val == "30");
 
-    // Test concatenated streams (pipelined)
-    std::string pipeline = resp_array + "+OK\r\n";
+    auto all = store.hgetall("user:1");
+    assert(all.size() == 2);
+
+    assert(store.hdel("user:1", "age") == true);
+    assert(store.hlen("user:1") == 1);
+    assert(store.hget("user:1", "age", val) == false);
+    cout << " PASSED!" << endl;
+}
+
+void test_expiration() {
+    cout << "[TEST] 4. Key Expiration & TTL...";
+    DataStore store;
+    store.set("session", "xyz", chrono::milliseconds(50));
+    string val;
+    assert(store.get("session", val) && val == "xyz");
+    assert(store.ttl("session") >= 0);
+
+    portable_sleep(60);
+    assert(store.get("session", val) == false);
+    assert(store.ttl("session") == -2);
+    cout << " PASSED!" << endl;
+}
+
+void test_resp_parser_and_pipelining() {
+    cout << "[TEST] 5. RESP Protocol & Pipelining...";
+    string stream = "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n";
+
     size_t consumed1 = 0;
-    auto val1 = RESPParser::parse_with_consumed(pipeline, consumed1);
-    assert(val1.has_value());
-    assert(consumed1 == resp_array.length());
+    vector<string> cmd1;
+    assert(RESPParser::parse_command(stream, cmd1, consumed1) && cmd1.size() == 3);
+    assert(cmd1[0] == "SET" && cmd1[1] == "foo" && cmd1[2] == "bar");
 
-    std::string tail = pipeline.substr(consumed1);
+    string tail = stream.substr(consumed1);
     size_t consumed2 = 0;
-    auto val2 = RESPParser::parse_with_consumed(tail, consumed2);
-    assert(val2.has_value());
-    assert(consumed2 == 5); // +OK\r\n
-    assert(std::get<std::string>(*val2) == "OK");
-
-    std::cout << " -> PASSED!" << std::endl;
+    vector<string> cmd2;
+    assert(RESPParser::parse_command(tail, cmd2, consumed2) && cmd2.size() == 2);
+    assert(cmd2[0] == "GET" && cmd2[1] == "foo");
+    cout << " PASSED!" << endl;
 }
 
-void test_rdb_persistence() {
-    std::cout << "[TEST] Running RDB Persistence Test..." << std::endl;
-    auto store1 = std::make_shared<DataStore>();
-    store1->set("strkey", std::string("hello world"));
-    store1->hset("hashkey", "f1", std::string("v1"));
-    store1->lpush("listkey", std::string("elem1"));
-    store1->sadd("setkey", std::string("m1"));
-    store1->zadd("zkey", 99.9, "player1");
+#ifdef _WIN32
+struct ThreadParam {
+    DataStore* store;
+    int thread_id;
+    int ops;
+};
 
-    RDBPersistence rdb1(store1);
-    assert(rdb1.save("test_dump.rdb") == true);
+DWORD WINAPI WorkerFunc(LPVOID lpParam) {
+    ThreadParam* p = static_cast<ThreadParam*>(lpParam);
+    for (int i = 0; i < p->ops; ++i) {
+        string key = "key_" + to_string(p->thread_id) + "_" + to_string(i);
+        p->store->set(key, "val");
+        string val;
+        assert(p->store->get(key, val) && val == "val");
+    }
+    return 0;
+}
+#endif
 
-    auto store2 = std::make_shared<DataStore>();
-    RDBPersistence rdb2(store2);
-    assert(rdb2.load("test_dump.rdb") == true);
+void test_multithreading_concurrency() {
+    cout << "[TEST] 6. Multithreading & Mutex Synchronization (1,000 Concurrent Writes)...";
+    auto store = make_shared<DataStore>();
+    const int NUM_THREADS = 10;
+    const int OPS_PER_THREAD = 100;
 
-    assert(store2->get("strkey").has_value());
-    assert(std::get<std::string>(*store2->get("strkey")) == "hello world");
-    assert(store2->hget("hashkey", "f1").has_value());
-    assert(store2->zscore("zkey", "player1").has_value());
+#ifdef _WIN32
+    HANDLE handles[NUM_THREADS];
+    ThreadParam params[NUM_THREADS];
+    for (int t = 0; t < NUM_THREADS; ++t) {
+        params[t].store = store.get();
+        params[t].thread_id = t;
+        params[t].ops = OPS_PER_THREAD;
+        handles[t] = CreateThread(NULL, 0, WorkerFunc, &params[t], 0, NULL);
+    }
+    WaitForMultipleObjects(NUM_THREADS, handles, TRUE, INFINITE);
+    for (int t = 0; t < NUM_THREADS; ++t) {
+        CloseHandle(handles[t]);
+    }
+#endif
 
-    std::cout << " -> PASSED!" << std::endl;
+    assert(store->dbsize() == NUM_THREADS * OPS_PER_THREAD);
+    cout << " PASSED!" << endl;
 }
 
-void test_aof_rewrite_and_replay() {
-    std::cout << "[TEST] Running AOF Persistence & Rewrite Test..." << std::endl;
-    auto store = std::make_shared<DataStore>();
-    AOFPersistence aof("test_appendonly.aof", store);
+void test_snapshot_persistence() {
+    cout << "[TEST] 7. File Snapshot Persistence & Crash Recovery...";
+    auto store1 = make_shared<DataStore>();
+    store1->set("site", "redis.io");
+    store1->hset("config", "maxclients", "10000");
+    store1->rpush("queue", "task1");
+    store1->rpush("queue", "task2");
 
-    aof.append_command("SET", {std::string("key1"), std::string("val1")});
-    aof.append_command("HSET", {std::string("hkey"), std::string("f1"), std::string("v1")});
-    aof.append_command("ZADD", {std::string("zkey"), std::string("50"), std::string("m1")});
+    Persistence p1(store1);
+    assert(p1.save_snapshot("test_snapshot.rdb") == true);
 
-    store->set("key1", std::string("val1"));
-    store->hset("hkey", "f1", std::string("v1"));
-    store->zadd("zkey", 50.0, "m1");
+    auto store2 = make_shared<DataStore>();
+    Persistence p2(store2);
+    assert(p2.load_snapshot("test_snapshot.rdb") == true);
 
-    assert(aof.rewrite() == true);
-
-    auto cmds = aof.load();
-    assert(!cmds.empty());
-
-    std::cout << " -> PASSED!" << std::endl;
+    string val;
+    assert(store2->get("site", val) && val == "redis.io");
+    assert(store2->hget("config", "maxclients", val) && val == "10000");
+    assert(store2->llen("queue") == 2);
+    assert(store2->lpop("queue", val) && val == "task1");
+    cout << " PASSED!" << endl;
 }
 
 int main() {
-    std::cout << "========================================" << std::endl;
-    std::cout << "   REDIS CLONE VERIFICATION SUITE       " << std::endl;
-    std::cout << "========================================" << std::endl;
+    cout << "===============================================" << endl;
+    cout << "  MINIMIZED REDIS CLONE VERIFICATION SUITE     " << endl;
+    cout << "===============================================" << endl;
 
-    test_zset_ordering();
-    test_resp_parser_consumed();
-    test_rdb_persistence();
-    test_aof_rewrite_and_replay();
+    test_strings();
+    test_lists();
+    test_hashes();
+    test_expiration();
+    test_resp_parser_and_pipelining();
+    test_multithreading_concurrency();
+    test_snapshot_persistence();
 
-    std::cout << "========================================" << std::endl;
-    std::cout << " ALL VERIFICATION TESTS PASSED (10/10)! " << std::endl;
-    std::cout << "========================================" << std::endl;
+    cout << "===============================================" << endl;
+    cout << "  ALL 7 CORE VERIFICATION SUITES PASSED!       " << endl;
+    cout << "===============================================" << endl;
     return 0;
 }
