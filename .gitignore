@@ -1,4 +1,5 @@
-/about
-/docs
-*.exe
-*.rdb
+MyRedisCLI
+
+dump.my_rdb
+
+build
